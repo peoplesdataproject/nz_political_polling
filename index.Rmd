@@ -1,0 +1,268 @@
+---
+title: "Can we trust New Zealand's political polling?"
+author: "Tynan Burkhardt"
+date: 2023-03-03T21:13:14-05:00
+categories: ["R"]
+tags: ["R Markdown", "plot", "regression"]
+---
+
+<style>
+p.caption {
+  font-size: 0.6em;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, warning = FALSE, message = FALSE)
+```
+```{r echo = FALSE}
+library(tidyverse)
+library(rvest)
+library(janitor)
+library(lubridate)
+load('data.RDATA')
+load('plot_data.RDATA')
+party_colour <- function(pty){
+  recode(pty,
+         lab = '#D82A20',
+         nat = '#00529F',
+         grn = '#098137',
+         act = '#FDE401',
+         mri = '#B2001A',
+         nzf = '#000000',
+         top = '#32DAC3',
+         ncp = '#00AEEF',
+         unf = '#501557',
+         con = '#00AEEF',
+         mna = '#770808',
+         anz = '#AADDCC'
+  )
+}
+
+results <- filter(data, str_detect(poll, 'result')) %>% 
+  pivot_longer(nat:last_col(), 'party', values_to = 'rating') %>% 
+  mutate(
+    party = recode(party, 'tpm' = 'mri'),
+    colour = party_colour(party)
+  ) 
+
+loess_models <- split(plot_data, ~party) %>% 
+  map(~loess(rating ~ as.numeric(date), data = .x, span = 0.25))
+
+change_of_leadership <- read_csv('change_of_leader.csv') %>% 
+  mutate(
+    date = as.Date(date, format = '%d/%m/%y'),
+    y_coord = map2_dbl(party, date, ~predict(loess_models[[.x]], newdata = as.numeric(.y))),
+    colour = party_colour(party)
+  )
+
+bias_df <- split(plot_data, ~party) %>% 
+  map_df(., function(pty){
+    model = loess(rating ~ as.numeric(date), data = pty, span=.25)
+    pty %>% 
+      mutate(
+        pred = predict(model, newdata = .),
+        actual = rating, 
+        resid = actual - pred
+      )
+  }) 
+```
+
+
+Societies' relationship with political polling is a turbulent one. Cases where polls [wrongly predict](https://www.scientificamerican.com/article/why-polls-were-mostly-wrong/) political outcomes can shake the public's faith in the usefulness of the information polls produce and the pollsters behind them. But pollsters have major problems to deal with, the largest being the biases in the data they collect. [Response rates to opt-in phone and internet polls are dropping](https://www.pewresearch.org/fact-tank/2019/02/27/response-rates-in-telephone-surveys-have-resumed-their-decline/), participants may hide their true [intentions of voting for controversial candidates](https://www.scribbr.com/research-bias/social-desirability-bias/#:~:text=Social%20desirability%20bias%20occurs%20when,drug%20use%2C%20or%20sexual%20behavior.) and respondents may not be representative of the demographics of the general population. These are just some of the factors in which pollsters need to contextualise their results and apply corrective accounting measures.
+
+New Zealand has at least 10 polling organisations, which of course face the same sort of dilemmas. In fact, that voting is not a legal obligation in New Zealand means their job is all the more difficult. They cannot simply weight the demographics of their responses by that of the general population, because the general population is not necessarily [representative of the voting population](https://elections.nz/democracy-in-nz/historical-events/2020-general-election-and-referendums/voter-turnout-statistics-for-the-2020-general-election/). Additionally, New Zealand's MMP system allows for many minor parties, giving voters a broader choice and perhaps eroding some of the strong party loyalties that voters show in other countries, making it harder to pin down who a certain individual will vote for.
+
+Given the apparent difficulties that New Zealand pollsters face, how well have they done in predicting the last three general elections and gauging public opinion? This is what I look into in the rest of this article.
+
+# How well do NZ polls perform as a collective?
+
+So often in the news we hear of shock poll results, purporting a dramatic reverse in public opinion. However, seldom is there as glowing a spotlight when a consecutive line of polls show the same/similar 'boring' result. Convergence in estimates should perhaps be more exciting, as it shows pollsters are becoming more and more confident of the nations pulse at that point. This is especially the case when multiple polling organisations are all converging to the same estimate. Perhaps then, instead of being fed individual poll results we should view political polling from all organisation as a time series. We could then fit an appropriate model to that data, which would highlight the trend over time and provide a prediction of what a theoretical snap election at any point in time might have predicted. We could also see how closely this model, based on polling data, aligns with the actual election results. This is precisely what I have done in the plot below (\@ref(fig:timeseries-plot)). 
+
+All polling results from the last three election cycles are shown and the theoretical party vote proportions of New Zealand voters, if an election were to be held at any point along this time series, has been modelled. It also displays the past three general election results (large circles) and any changes in leadership (squares) within the major 4 parties (Labour, National, Act, Greens).
+
+```{r timeseries-plot, echo = FALSE, fig.dim = c(10, 8), fig.cap = 'Large circles indicate actual election results. Squares indicate change of leadership. The dotted line is the 5% threshold a party requires to get into parliament.'}
+ggplot() +
+  geom_hline(yintercept = 0, colour = 'lightgrey') + 
+  geom_point(data = plot_data, aes(x = date, y = rating, colour = I(colour)), alpha = 0.3) + 
+  geom_smooth(data = plot_data, aes(x = date, y = rating, colour = I(colour)), se = F, method = 'loess', formula = 'y ~ x', span = 0.25) + 
+  theme_bw() + 
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.title = element_text(size = 12),    
+    plot.caption = element_text(hjust = 0, colour = 'blue', size = 12)
+  ) + 
+  scale_x_date(date_breaks = '3 months', date_labels = "%b '%y", expand = c(0.02,0.02)) +
+  geom_point(data = results, aes(date, rating, fill = I(colour)), size = 4, pch = 21, colour = 'black', alpha = 0.8) +
+  geom_hline(yintercept = 5, lty = 2, col = 'black') + 
+  geom_point(
+    data = change_of_leadership, 
+    aes(date, y_coord, fill = I(colour)), 
+    pch = 22, colour = 'black', size = 4
+  ) +
+  geom_text(
+    data = change_of_leadership,
+    aes(date, y_coord, label = new_leader),
+    hjust = -.1
+  ) +
+  labs(
+    x = NULL, 
+    y = 'Party Vote (%)'
+  ) 
+```
+
+There are few things of note here. First, the model actually aligns pretty well with the actual observed results from the past three elections. However, National appears to have been over-estimated by pollsters in the 2020 election and the Greens were over-estimated in the two elections prior to that. On the contrary, Labour is really well represented by polling in all elections. Secondly, there are periods of greater polling uncertainty than others. Unsurprisingly, these appear to be more common in dynamic periods, when public support for particular parties are rapidly changing. For example, the period preceding the 2020 general election saw increased variability in polling estimates for both the major and minor parties. This period also saw a rapid increase in Labour and Act's popularity and a massive decrease in support for National (along with two leadership changes). Finally, these types of plots clearly show the rise and fall of political parties over time. For many voters, this may not be apparent until election day when they see party X now has an additional 10 seats in parliament. Here, we can see the meteoric rise of Act between January 2020 and October 2021. We can see how detrimental the [benefit fraud scandal](https://www.theguardian.com/world/2017/aug/09/new-zealand-green-party-leader-metiria-turei-resigns-lied-to-claim-benefits) in August of 2017 was to the Greens, taking almost one year for support to finally stabilise. Interestingly, we can also see how National's recent change of leadership to Christopher Luxon provided a significant boost to the parties' polling results, likely at the expense of Labour and Act. Although, this has now tapered off with the other two parties beginning to reclaim those supporters. 
+
+The point being here, is that having a clear time series of events in one place provides a much clearer story than cherry picking specific polling results, taking away some of the confusion political media consumers might have when the individual polls they are fed might differ hugely week to week.
+
+# Are some polls biased?
+
+The above visualisation and modelling of polling data has some clear benefits. But what if polls are biased? A sufficiently large polling bias from one or more of the 10+ polling organisations, from which this data comes, could change the model we created quite significantly. Perhaps this is the cause for some of the discrepancies we saw between the actual election results and polling data model. 
+
+One way to assess these apparent biases for each polling organisation would be to look at its average discrepancy to the model's rolling average. If a political poll is consistently above or below the rolling average for party X, that may be an indication the poll is more biased towards or against that particular party. Of course, it is also possible that this poll may be the one correct poll in the lot. However, given that the above model's rolling average was relatively well aligned with the actual election results, this seems unlikely.
+
+When a polling organisation has completed a large number of polls over time, this provides more data to better estimate their average bias. With more data we can fit a tighter confidence interval around this estimated bias. A confidence interval is a range between two numbers that a statistician has some level of confidence (usually 95%) that the true mean sits within. In our case, if we see zero sits within the 95% confidence interval, we do not have evidence that the poll is biased at all. When a confidence interval range is entirely within the positive, or entirely within the negative, then there is some indication the poll has some bias for or against that party. The below plot shows the estimated average biases of each poll for each of the four major parties. It also includes the 95% confidence interval for these estimates (\@ref(fig:bias-plot)).
+
+```{r bias-plot, echo = FALSE, fig.dim = c(10, 8), fig.cap = 'The teal segment represents the 95% confidence interval. Where the interval crosses the zero line there is no evidence of a bias in that poll.'}
+bias_df %>% 
+  filter(party %in% c('act','grn','lab','nat')) %>% 
+  mutate(party = recode(party, 'act' = 'Act', 'grn' = 'Greens', 'lab' = 'Labour', 'nat' = 'National')) %>% 
+  group_by(poll, party, colour) %>% 
+  summarise(
+    average_resid = mean(resid, na.rm = T), 
+    n = n(),
+    sd = sd(resid, na.rm = T),
+    .groups = 'drop'
+  ) %>% 
+  mutate(
+    sem = sd/sqrt(n),
+    conf_lower = average_resid - 1.96 * sem,
+    conf_upper = average_resid + 1.96 * sem
+  ) %>% 
+  ggplot() + 
+  geom_hline(yintercept = 0, colour = 'lightgrey') +
+  geom_bar(aes(x = poll, y = average_resid, fill = I(colour)), colour = 'black', stat = 'identity') + 
+  geom_jitter(data= bias_df %>% 
+                filter(party %in% c('act','grn','lab','nat')) %>% 
+                mutate(party = recode(party, 'act' = 'Act', 'grn' = 'Greens', 'lab' = 'Labour', 'nat' = 'National')), aes(poll, resid, fill = I(colour)), height = 0, width = 0.1, alpha = 0.4, pch = 21, colour = 'black') +
+  geom_segment(aes(x = poll, xend = poll, y = conf_lower, yend = conf_upper), size = 2, alpha = 0.8, colour = '#32DAC3') +
+  geom_point(aes(poll, average_resid), size = 2) +
+  coord_flip() +
+  facet_wrap(~party, nrow = 1) + 
+  theme_bw() + 
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.title = element_text(size = 12),
+    strip.text = element_text(face = 'bold', size = 12)
+  ) +
+  labs(
+    x = NULL,
+    y = 'Deviation from rolling average (% points)'
+  )
+```
+
+There are 11 polling organisations, although I have separated out polls commissioned by different entities (e.g. Talbot Mills vs. a Labour commissioned Talbot Mills poll). The most prolific, in terms of number of polls, are Curia (commissioned by the Taxpayers' Union), Talbot Mills, Roy Morgan Research, Reid Research and Colmar Brunton. Curia and Reid Research appear to have little to no bias when polling on National and Act, but slightly over emphasises Labour's support at the expense of the Greens. Talbot Mills does a fairly good job of estimateing Green and National support, but slightly over estimates Labour's support and under estimates Act's support. Roy Morgan Research has, on average, similar results to Curia, except it overweights the Greens at Labour's expense. Colmar Brunton tends to over estimate National and under estimate the Greens. For the polling organisations who less frequently conduct polls, it is much harder to estimate their bias, which can be seen in their comparatively larger confidence intervals.
+
+# Can we use bias-adjusted polling data to forecast into the future?
+
+We can now adjust the data presented in Figure \@ref(fig:timeseries-plot) by removing the average bias of each polling organisation from each of their reported polled results. This removes the differences between polling organisations and allows us to apply some statistical time series forecasting methods to the data. Below, shows a forecasting method called [Autoregressive Integrated Moving Average](https://www.investopedia.com/terms/a/autoregressive-integrated-moving-average-arima.asp#:~:text=An%20autoregressive%20integrated%20moving%20average%2C%20or%20ARIMA%2C%20is%20a%20statistical,values%20based%20on%20past%20values.), most commonly known as an ARIMA model ( \@ref(fig:forecast-plot)). The ARIMA model uses past polling results and their moving/rolling average to forecast into the future. It also states some level of confidence in these forecasted estimates. This confidence reduces the further into the future we try to estimate, which can again be visualised with confidence intervals.
+
+```{r forecast-plot, echo = FALSE, fig.dim = c(10, 8), fig.cap = 'Forecast of party support over to the end of July. Forecast is based on polling data after it has been adjusted for polling organisation biases from the previous section. Dotted lines indicate the future forecast and the ribbons surrounding them indicate the 95% confidence interval.'}
+parties_to_estimate <- filter(data, date == max(date, na.rm = T)) %>% 
+  relocate(sample_size, .after = poll) %>% 
+  pivot_longer(nat:last_col(), 'party') %>% 
+  filter(complete.cases(value)) %>% 
+  {unique(.$party)}
+
+correction_factors <- bias_df %>% 
+  filter(party %in% parties_to_estimate) %>% 
+  group_by(poll, party) %>% 
+  summarise(
+    average_resid = mean(resid, na.rm = T), .groups = 'drop') 
+
+adjusted_plot_data <- inner_join(plot_data, correction_factors, by = c('poll', 'party')) %>% 
+  filter(complete.cases(rating)) %>% 
+  mutate(adjusted_rating = rating - average_resid)
+
+loess_models_adj <- split(adjusted_plot_data, ~party) %>% 
+  map(~loess(adjusted_rating ~ as.numeric(date), data = .x, span = 0.25))
+
+change_of_leadership_adj <- read_csv('change_of_leader.csv') %>% 
+  mutate(
+    date = as.Date(date, format = '%d/%m/%y'),
+    y_coord = map2_dbl(party, date, ~predict(loess_models_adj[[.x]], newdata = as.numeric(.y))),
+    colour = party_colour(party)
+  )
+
+adjusted_plot <- ggplot() +
+  geom_hline(yintercept = 0, colour = 'lightgrey') + 
+  geom_point(data = adjusted_plot_data, aes(x = date, y = adjusted_rating, colour = I(colour)), alpha = 0.3) + 
+  geom_smooth(data = adjusted_plot_data, aes(x = date, y = adjusted_rating, colour = I(colour)), se = F, method = 'loess', formula = 'y ~ x', span = 0.25) +
+  theme_bw() + 
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.title = element_text(size = 12) 
+  ) + 
+  geom_point(data = results, aes(date, rating, fill = I(colour)), size = 4, pch = 21, colour = 'black', alpha = 0.8) +
+  geom_hline(yintercept = 5, lty = 2, col = 'black') + 
+  geom_point(
+    data = change_of_leadership_adj, 
+    aes(date, y_coord, fill = I(colour)), 
+    pch = 22, colour = 'black', size = 4
+  ) +
+  geom_text(
+    data = change_of_leadership_adj,
+    aes(date, y_coord, label = new_leader),
+    hjust = -.1
+  ) +
+  labs(
+    x = NULL, 
+    y = ' Adjusted Party Vote (%)'
+  ) 
+
+library(forecast)
+library(zoo)
+
+forecast_data <- map_df(
+  c('nat','lab','grn','act','nzf'),
+  possibly( function(pty){
+    lab_df <- adjusted_plot_data %>% filter(party == pty, complete.cases(date)) %>% 
+      group_by(date) %>% 
+      summarise(adj_rating = mean(adjusted_rating, na.rm = T))
+    
+    lab_missing <- bind_rows(lab_df, 
+                             tibble(date = seq(min(lab_df$date), max(lab_df$date), 1), adj_rating = NA) %>% 
+                               filter(!(date %in% lab_df$date))) %>% 
+      arrange(date)
+    
+    lab_zoo <- zoo(lab_missing$adj_rating, lab_missing$date)
+    lab_zoo <- na.approx(lab_zoo)
+    
+    model <- Arima(lab_zoo, c(4,2,1))
+    # model <- auto.arima(lab_zoo, seasonal = F)
+    
+    forecast_data <- forecast(model, 350) 
+    
+    as_tibble(forecast_data) %>% 
+      bind_cols(tibble(date = as.Date(fortify.zoo(forecast_data$mean)$Index, origin = '1970-01-01'))) %>% 
+      select(date, rating = `Point Forecast`, lo = `Lo 95`,  hi = `Hi 95`) %>% 
+      mutate(party = pty, colour = party_colour(pty)) 
+  }, otherwise = NULL)
+) 
+
+adjusted_plot + 
+  geom_ribbon(data = forecast_data, aes(date, rating, ymin = lo, ymax = hi, fill = I(colour)), alpha = 0.4) + 
+  geom_line(data = forecast_data, aes(date, rating, colour = I(colour)), size = 1.5, lty = 3) +
+  scale_x_date(date_breaks = '6 months', date_labels = "%b '%y", expand = c(0.02,0.02))
+```
+
+The forecasted estimates (i.e. the dotted line) seem reasonable, given the current state of public opinion and the trends we observed prior to now. Labour and National appear neck and neck and the estimates for Act, New Zealand First and the Greens appear well within the realm of possibilities. However, as each parties' time series of public support is close to being a random pattern over the past 10 years (i.e. there are no clear long term trends and no apparent seasonality in our data), the model we fit has enormous confidence intervals. In other words, I'm not very confident in the estimate I produced, especially going forward more than one month.
+
+Of course, attempting to predict an election 8 months in advance is a fool's errand. Sometimes it is difficult to know just one day in advance what the outcome will be with any serious level of confidence. There are many real life events that could happen within the next 8 months that could dramatically change support for one party over another. A scandal could erupt, a policy announcement could be ill received, a politician might lose favour with the public after misguided comments, for example. Events like these can have a substantial impact on public opinion and subsequent polling results. However, no model can take into account things that have not yet happened and what our model does provide is an insight into how unsure we should be about future public support for any of the parties. Much of political discourse at the moment almost implies the odds of forming a government at the next election to be overwhelmingly in National's favour. However, historic polling results and their recent trends show this is far from a sure thing. Yes, public opinion/polling currently predicts a National-Act coalition, but just as we have little confidence in what the next major political news story might be, we should also have little confidence in what the downstream effects of that story might be.
+
